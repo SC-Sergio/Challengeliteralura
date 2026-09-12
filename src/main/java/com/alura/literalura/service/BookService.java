@@ -1,125 +1,145 @@
 package com.alura.literalura.service;
 
-import com.alura.literalura.dto.GutenDexResponse;
+import com.alura.literalura.client.GutendexClient;
+import com.alura.literalura.dto.AuthorDto;
 import com.alura.literalura.dto.BookDto;
+import com.alura.literalura.dto.GutenDexResponse;
+import com.alura.literalura.model.Author;
 import com.alura.literalura.model.Book;
+import com.alura.literalura.repository.AuthorRepository;
 import com.alura.literalura.repository.BookRepository;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
-import com.alura.literalura.dto.Author;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestClientException;
 
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.Locale;
+import java.util.Set;
 
 @Service
 public class BookService {
 
-    @Autowired
-    private BookRepository bookRepository;
+    private final BookRepository bookRepository;
+    private final AuthorRepository authorRepository;
+    private final GutendexClient gutendexClient;
 
-    // Buscar y guardar libros desde Gutendex por título
-    public void fetchAndSaveBookByTitle(String title) {
-        String apiUrl = "https://gutendex.com/books/?search=" + title;
+    public BookService(BookRepository bookRepository, AuthorRepository authorRepository, GutendexClient gutendexClient) {
+        this.bookRepository = bookRepository;
+        this.authorRepository = authorRepository;
+        this.gutendexClient = gutendexClient;
+    }
 
-        RestTemplate restTemplate = new RestTemplate();
+    @Transactional
+    public BookImportResult fetchAndSaveBookByTitle(String title) {
+        if (title == null || title.isBlank()) {
+            return BookImportResult.INVALID_QUERY;
+        }
 
+        final GutenDexResponse response;
         try {
-            GutenDexResponse response = restTemplate.getForObject(apiUrl, GutenDexResponse.class);
+            response = gutendexClient.searchBooks(title.trim());
+        } catch (RestClientException exception) {
+            return BookImportResult.API_ERROR;
+        }
 
-            if (response != null && response.getResults() != null) {
-                List<Book> books = response.getResults().stream().map(bookDto -> {
-                    Book book = new Book();
-                    book.setTitle(bookDto.getTitle());
-                    book.setAuthor(bookDto.getAuthors() != null
-                            ? bookDto.getAuthors().stream()
-                            .map(Author::getName)
-                            .collect(Collectors.joining(", "))
-                            : "Desconocido");
-                    book.setLanguage(bookDto.getLanguages() != null
-                            ? String.join(", ", bookDto.getLanguages())
-                            : "Desconocido");
-                    book.setDownloadCount(bookDto.getDownloadCount());
-                    return book;
-                }).collect(Collectors.toList());
+        if (response == null || response.getResults() == null || response.getResults().isEmpty()) {
+            return BookImportResult.NOT_FOUND;
+        }
 
-                bookRepository.saveAll(books);
-                System.out.println("Libros cargados exitosamente desde Gutendex.");
-            } else {
-                System.out.println("No se encontraron resultados para el título: " + title);
+        BookDto selected = selectBestMatch(response.getResults(), title.trim());
+        if (selected.getId() == null || selected.getTitle() == null || selected.getTitle().isBlank()) {
+            return BookImportResult.NOT_FOUND;
+        }
+
+        if (bookRepository.existsByGutendexId(selected.getId())) {
+            return BookImportResult.DUPLICATE;
+        }
+
+        Book book = new Book();
+        book.setGutendexId(selected.getId());
+        book.setTitle(selected.getTitle().trim());
+        book.setDownloadCount(selected.getDownloadCount() != null ? selected.getDownloadCount() : 0);
+        book.setLanguages(normalizeLanguages(selected.getLanguages()));
+        book.setAuthors(resolveAuthors(selected.getAuthors()));
+
+        bookRepository.save(book);
+        return BookImportResult.SAVED;
+    }
+
+    @Transactional(readOnly = true)
+    public List<Book> listBooks() {
+        return bookRepository.findAllByOrderByTitleAsc();
+    }
+
+    @Transactional(readOnly = true)
+    public List<Author> listAuthors() {
+        return authorRepository.findAllByOrderByNameAsc();
+    }
+
+    @Transactional(readOnly = true)
+    public List<Author> listAuthorsAliveInYear(int year) {
+        return authorRepository.findAliveInYear(year);
+    }
+
+    @Transactional(readOnly = true)
+    public List<Book> listBooksByLanguage(String language) {
+        if (language == null || language.isBlank()) {
+            return List.of();
+        }
+        return bookRepository.findByLanguageIgnoreCase(language.trim().toLowerCase(Locale.ROOT));
+    }
+
+    private BookDto selectBestMatch(List<BookDto> results, String query) {
+        return results.stream()
+                .filter(book -> book.getTitle() != null && book.getTitle().equalsIgnoreCase(query))
+                .findFirst()
+                .orElse(results.get(0));
+    }
+
+    private Set<String> normalizeLanguages(List<String> languages) {
+        Set<String> normalized = new LinkedHashSet<>();
+        if (languages == null) {
+            return normalized;
+        }
+
+        languages.stream()
+                .filter(language -> language != null && !language.isBlank())
+                .map(language -> language.trim().toLowerCase(Locale.ROOT))
+                .forEach(normalized::add);
+        return normalized;
+    }
+
+    private Set<Author> resolveAuthors(List<AuthorDto> authorDtos) {
+        Set<Author> authors = new LinkedHashSet<>();
+        if (authorDtos == null) {
+            return authors;
+        }
+
+        for (AuthorDto authorDto : authorDtos) {
+            if (authorDto == null || authorDto.getName() == null || authorDto.getName().isBlank()) {
+                continue;
             }
-        } catch (Exception e) {
-            System.err.println("Error al conectar con la API de Gutendex: " + e.getMessage());
+
+            String name = authorDto.getName().trim();
+            Author author = authorRepository.findByNameIgnoreCase(name)
+                    .map(existing -> updateMissingYears(existing, authorDto))
+                    .orElseGet(() -> authorRepository.save(new Author(name, authorDto.getBirthYear(), authorDto.getDeathYear())));
+            authors.add(author);
         }
+        return authors;
     }
 
-    // Listar todos los libros
-    public void listBooks() {
-        List<Book> books = bookRepository.findAll();
-        if (books.isEmpty()) {
-            System.out.println("No hay libros registrados en la base de datos.");
-        } else {
-            books.forEach(book -> {
-                System.out.println("Título: " + book.getTitle());
-                System.out.println("Autor: " + book.getAuthor());
-                System.out.println("Idioma: " + book.getLanguage());
-                System.out.println("Número de descargas: " + book.getDownloadCount());
-                System.out.println("-----------------------------");
-            });
+    private Author updateMissingYears(Author author, AuthorDto dto) {
+        boolean changed = false;
+        if (author.getBirthYear() == null && dto.getBirthYear() != null) {
+            author.setBirthYear(dto.getBirthYear());
+            changed = true;
         }
-    }
-
-    // Listar todos los autores
-    public void listAuthors() {
-        List<String> authors = bookRepository.findAll()
-                .stream()
-                .map(Book::getAuthor)
-                .distinct()
-                .collect(Collectors.toList());
-
-        if (authors.isEmpty()) {
-            System.out.println("No hay autores registrados.");
-        } else {
-            authors.forEach(author -> System.out.println("Autor: " + author));
+        if (author.getDeathYear() == null && dto.getDeathYear() != null) {
+            author.setDeathYear(dto.getDeathYear());
+            changed = true;
         }
-    }
-
-    // Listar autores vivos en un año específico
-    public void listAuthorsAliveInYear(int year) {
-        // Nota: Necesitarás ajustar la lógica dependiendo de los datos de los autores (fechas de nacimiento y muerte).
-        // Aquí asumimos que `Book` incluye información relevante del autor.
-        List<String> authorsAlive = bookRepository.findAll()
-                .stream()
-                .filter(book -> {
-                    // Lógica de ejemplo: ajustar según estructura real
-                    return true; // Cambiar según las fechas
-                })
-                .map(Book::getAuthor)
-                .distinct()
-                .collect(Collectors.toList());
-
-        if (authorsAlive.isEmpty()) {
-            System.out.println("No se encontraron autores vivos en el año " + year);
-        } else {
-            authorsAlive.forEach(author -> System.out.println("Autor vivo en " + year + ": " + author));
-        }
-    }
-
-    // Listar libros por idioma
-    public void listBooksByLanguage(String language) {
-        List<Book> books = bookRepository.findAll()
-                .stream()
-                .filter(book -> book.getLanguage().equalsIgnoreCase(language))
-                .collect(Collectors.toList());
-
-        if (books.isEmpty()) {
-            System.out.println("No hay libros registrados en el idioma: " + language);
-        } else {
-            books.forEach(book -> {
-                System.out.println("Título: " + book.getTitle());
-                System.out.println("Autor: " + book.getAuthor());
-                System.out.println("-----------------------------");
-            });
-        }
+        return changed ? authorRepository.save(author) : author;
     }
 }
