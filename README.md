@@ -186,6 +186,12 @@ En Windows:
 .\mvnw.cmd test
 ```
 
+## Integración continua
+
+El repositorio incluye un workflow de **GitHub Actions** que valida cada Pull Request hacia `main` y cada push a `main` con **Java 17 (Temurin)** y el **Maven Wrapper**. El job ejecuta `mvn verify`, por lo que compila el proyecto y ejecuta la suite de tests automáticamente.
+
+Las actions de terceros utilizadas por el workflow están fijadas a SHAs completos y el token del workflow se limita a permisos de lectura sobre el contenido del repositorio.
+
 ## Estructura principal
 
 ```text
@@ -227,8 +233,7 @@ Los artefactos generados por Maven (`target/`) están excluidos mediante `.gitig
 - agregar tests de integración con PostgreSQL/Testcontainers;
 - manejar paginación de Gutendex;
 - mejorar la selección de coincidencias por título;
-- añadir logging estructurado;
-- incorporar CI para compilación y tests.
+- añadir logging estructurado.
 
 ## Autor
 
