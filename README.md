@@ -190,7 +190,7 @@ En Windows:
 
 El repositorio incluye un workflow de **GitHub Actions** que valida cada Pull Request hacia `main` y cada push a `main` con **Java 17 (Temurin)** y el **Maven Wrapper**. El job ejecuta `mvn verify`, por lo que compila el proyecto y ejecuta la suite de tests automáticamente.
 
-Las actions de terceros utilizadas por el workflow están fijadas a SHAs completos y el token del workflow se limita a permisos de lectura sobre el contenido del repositorio.
+Las actions externas utilizadas por el workflow están fijadas a SHAs completos y el token del workflow se limita a permisos de lectura sobre el contenido del repositorio.
 
 ## Estructura principal
 
