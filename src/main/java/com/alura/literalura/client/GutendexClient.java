@@ -15,7 +15,7 @@ public class GutendexClient {
 
     public GutenDexResponse searchBooks(String query) {
         return restClient.get()
-                .uri("/books?search={query}", query)
+                .uri("/books/?search={query}", query)
                 .retrieve()
                 .body(GutenDexResponse.class);
     }
